@@ -4,43 +4,93 @@
   <meta charset="UTF-8">
   <title>Global CAP Alerts Feed</title>
   <style>
-    body { font-family: Arial, sans-serif; margin: 2rem; background: #f9f9f9; }
-    h1 { color: #2c3e50; }
-    .meta { margin-bottom: 1rem; color: #444; }
-    pre { background: #ecf0f1; padding: 1rem; border-radius: 8px; overflow-x: auto; max-height: 80vh; }
-    button { padding: 0.5rem 0.75rem; border: 0; border-radius: 6px; cursor: pointer; }
+    body {
+      font-family: Arial, sans-serif;
+      margin: 2rem;
+      background: #f9f9f9;
+    }
+    h1 {
+      color: #2c3e50;
+    }
+    .meta {
+      margin-bottom: 1rem;
+      color: #444;
+    }
+    pre {
+      background: #ecf0f1;
+      padding: 1rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      max-height: 80vh;
+      white-space: pre-wrap;
+    }
+    button {
+      padding: 0.5rem 0.75rem;
+      border: 0;
+      border-radius: 6px;
+      cursor: pointer;
+    }
   </style>
 </head>
+
 <body>
   <h1>Global CAP Alerts</h1>
+
   <div class="meta">
     <button id="refresh">Refresh now</button>
     <span id="status">Loading…</span>
+    <span id="lastUpdated"></span>
   </div>
+
   <pre id="feed">Loading feed…</pre>
 
   <script>
-    const FEED_URL = "https://gcapalertbucket.s3.eu-north-1.amazonaws.com/global_cap.xml";
+    const FEED_URL =
+      "https://gcapalertbucket.s3.eu-north-1.amazonaws.com/global_cap.xml";
 
     async function loadFeed() {
-      const status = document.getElementById("status");
-      status.textContent = "Fetching…";
+      const statusEl = document.getElementById("status");
+      const lastEl = document.getElementById("lastUpdated");
+      const feedEl = document.getElementById("feed");
+
+      statusEl.textContent = "Fetching…";
+      lastEl.textContent = "";
+
       try {
         const res = await fetch(FEED_URL, { cache: "no-store" });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
         const text = await res.text();
-        document.getElementById("feed").textContent = text;
-        status.textContent = `Updated: ${new Date().toLocaleString()}`;
+        feedEl.textContent = text;
+        statusEl.textContent = "OK";
+
+        const last = computeLastUpdated(text);
+        if (last) {
+          lastEl.textContent = `Last alert sent: ${last.toISOString()}`;
+        }
+
       } catch (e) {
-        document.getElementById("feed").textContent = `Error loading feed: ${e}`;
-        status.textContent = "Failed";
+        feedEl.textContent = `Error loading feed:\n${e}`;
+        statusEl.textContent = "Failed";
       }
     }
 
+    function computeLastUpdated(xmlText) {
+      const doc = new DOMParser().parseFromString(xmlText, "application/xml");
+      const sentNodes = Array.from(doc.getElementsByTagName("sent"));
+
+      const times = sentNodes
+        .map(n => Date.parse(n.textContent))
+        .filter(t => Number.isFinite(t));
+
+      if (!times.length) return null;
+      return new Date(Math.max(...times));
+    }
+
     document.getElementById("refresh").addEventListener("click", loadFeed);
+
     loadFeed();
     setInterval(loadFeed, 15 * 60 * 1000);
   </script>
 </body>
 </html>
-
