@@ -95,34 +95,34 @@
       }
     }
 
-    function parseCap(xmlText) {
-      const doc = new DOMParser().parseFromString(xmlText, "application/xml");
+function parseCap(xmlText) {
+  const doc = new DOMParser().parseFromString(xmlText, "application/xml");
 
-      // basic parse error detection
-      const parseError = doc.getElementsByTagName("parsererror")[0];
-      if (parseError) throw new Error("Invalid XML received");
+  const parseError = doc.getElementsByTagName("parsererror")[0];
+  if (parseError) throw new Error("Invalid XML received");
 
-      const alertEls = Array.from(doc.getElementsByTagName("alert"));
-      const alerts = alertEls.map(alertEl => alertFromElement(alertEl));
+  const alertEls = Array.from(doc.getElementsByTagNameNS("*", "alert"));
+  const alerts = alertEls.map(alertEl => alertFromElement(alertEl));
 
-      const sentTimes = alerts
-        .map(a => a.sent ? Date.parse(a.sent) : NaN)
-        .filter(t => Number.isFinite(t));
+  const sentTimes = alerts
+    .map(a => a.sent ? Date.parse(a.sent) : NaN)
+    .filter(t => Number.isFinite(t));
 
-      const lastSent = sentTimes.length ? new Date(Math.max(...sentTimes)) : null;
-      return { alerts, lastSent };
-    }
+  const lastSent = sentTimes.length ? new Date(Math.max(...sentTimes)) : null;
+  return { alerts, lastSent };
+}
 
-    function textOf(el, tag) {
-      const n = el.getElementsByTagName(tag)[0];
-      return n ? (n.textContent || "").trim() : "";
-    }
 
-    function textsOf(el, tag) {
-      return Array.from(el.getElementsByTagName(tag))
-        .map(n => (n.textContent || "").trim())
-        .filter(Boolean);
-    }
+    function textOf(el, localName) {
+  const n = el.getElementsByTagNameNS("*", localName)[0];
+  return n ? (n.textContent || "").trim() : "";
+}
+
+function textsOf(el, localName) {
+  return Array.from(el.getElementsByTagNameNS("*", localName))
+    .map(n => (n.textContent || "").trim())
+    .filter(Boolean);
+}
 
     function alertFromElement(alertEl) {
       const identifier = textOf(alertEl, "identifier");
@@ -132,7 +132,7 @@
       const msgType = textOf(alertEl, "msgType");
       const scope = textOf(alertEl, "scope");
 
-      const infoEl = alertEl.getElementsByTagName("info")[0] || null;
+      const infoEl = alertEl.getElementsByTagNameNS("*", "info")[0] || null;
 
       const event = infoEl ? textOf(infoEl, "event") : "";
       const headline = infoEl ? textOf(infoEl, "headline") : "";
@@ -143,11 +143,11 @@
       const certainty = infoEl ? textOf(infoEl, "certainty") : "";
 
       const categories = infoEl ? textsOf(infoEl, "category") : [];
-      const areas = infoEl ? Array.from(infoEl.getElementsByTagName("area")).map(areaEl => {
+      const areas = infoEl ? Array.from(infoEl.getElementsByTagNameNS("*", "area")).map(areaEl => {
         const areaDesc = textOf(areaEl, "areaDesc");
         const polygons = textsOf(areaEl, "polygon");
         const circles = textsOf(areaEl, "circle");
-        const geocodes = Array.from(areaEl.getElementsByTagName("geocode")).map(gc => ({
+        const geocodes = Array.from(areaEl.getElementsByTagNameNS("*", "geocode")).map(gc => ({
           name: textOf(gc, "valueName"),
           value: textOf(gc, "value")
         })).filter(g => g.name || g.value);
