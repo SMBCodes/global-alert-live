@@ -16,7 +16,7 @@ No account, API key, or setup is required to consume the data.
 ## Live viewer
 
 **Human-readable view (auto-refreshing):**  
-https://jul0l0.github.io/global-alert-live/
+https://smbcodes.github.io/global-alert-live/
 
 This page fetches the latest aggregated CAP XML and refreshes automatically. It is intended for quick inspection, debugging, and exploratory analysis.
 
