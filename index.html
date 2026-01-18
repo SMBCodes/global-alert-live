@@ -4,54 +4,69 @@
   <meta charset="UTF-8">
   <title>Global CAP Alerts Feed</title>
   <style>
-    body {
-      font-family: Arial, sans-serif;
-      margin: 2rem;
-      background: #f9f9f9;
-    }
-    h1 {
-      color: #2c3e50;
-    }
-    .meta {
-      margin-bottom: 1rem;
-      color: #444;
-    }
-    pre {
-      background: #ecf0f1;
-      padding: 1rem;
-      border-radius: 8px;
-      overflow-x: auto;
-      max-height: 80vh;
-      white-space: pre-wrap;
-    }
-    button {
-      padding: 0.5rem 0.75rem;
-      border: 0;
-      border-radius: 6px;
-      cursor: pointer;
-    }
+    body { font-family: Arial, sans-serif; margin: 2rem; background: #f9f9f9; }
+    h1 { color: #2c3e50; margin-bottom: 0.5rem; }
+    .meta { margin-bottom: 1rem; color: #444; display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; }
+    button, select, input { padding: 0.5rem 0.75rem; border: 0; border-radius: 6px; }
+    select, input { border: 1px solid #ccc; background: #fff; }
+    button { cursor: pointer; }
+    .status { margin-left: 0.25rem; }
+    .muted { color: #666; font-size: 0.95rem; }
+    .controls { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; }
+    .list { display: grid; gap: 0.75rem; }
+    details { background: #fff; border-radius: 10px; padding: 0.75rem 1rem; box-shadow: 0 1px 4px rgba(0,0,0,0.06); }
+    summary { cursor: pointer; list-style: none; }
+    summary::-webkit-details-marker { display: none; }
+    .summaryTop { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: baseline; }
+    .title { font-weight: 700; color: #1f2d3d; }
+    .tag { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 999px; background: #ecf0f1; font-size: 0.85rem; }
+    .kv { margin-top: 0.5rem; display: grid; gap: 0.25rem; }
+    .kv div { line-height: 1.35; }
+    code { background: #ecf0f1; padding: 0.1rem 0.25rem; border-radius: 4px; }
+    .empty { padding: 1rem; color: #666; }
   </style>
 </head>
 
 <body>
   <h1>Global CAP Alerts</h1>
+  <div class="muted">Consolidated CAP alerts, updated periodically. Filter, inspect, and export without downloading files manually.</div>
 
   <div class="meta">
-    <button id="refresh">Refresh now</button>
-    <span id="status">Loading…</span>
-    <span id="lastUpdated"></span>
+    <div class="controls">
+      <button id="refresh">Refresh now</button>
+      <span class="status" id="status">Loading…</span>
+      <span id="lastUpdated"></span>
+    </div>
+
+    <div class="controls">
+      <label for="country"><span class="muted">Filter:</span></label>
+      <select id="country">
+        <option value="">All</option>
+      </select>
+
+      <label for="q"><span class="muted">Search:</span></label>
+      <input id="q" type="text" placeholder="event, headline, area…" />
+
+      <span class="muted" id="count"></span>
+    </div>
+
+    <div class="controls">
+      <button id="dlJson">Download JSON</button>
+      <button id="dlGeoJson">Download GeoJSON</button>
+    </div>
   </div>
 
-  <pre id="feed">Loading feed…</pre>
+  <div id="list" class="list"></div>
 
   <script>
-    const FEED_URL =
-      "https://gcapalertbucket.s3.eu-north-1.amazonaws.com/global_cap.xml";
+    const FEED_URL = "https://gcapalertbucket.s3.eu-north-1.amazonaws.com/global_cap.xml";
+
+    let ALL_ALERTS = [];
+    let LAST_XML_TEXT = "";
 
     async function loadFeed() {
       const statusEl = document.getElementById("status");
       const lastEl = document.getElementById("lastUpdated");
-      const feedEl = document.getElementById("feed");
 
       statusEl.textContent = "Fetching…";
       lastEl.textContent = "";
@@ -60,37 +75,336 @@
         const res = await fetch(FEED_URL, { cache: "no-store" });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
-        const text = await res.text();
-        feedEl.textContent = text;
-        statusEl.textContent = "OK";
+        const xmlText = await res.text();
+        LAST_XML_TEXT = xmlText;
 
-        const last = computeLastUpdated(text);
-        if (last) {
-          lastEl.textContent = `Last alert sent: ${last.toISOString()}`;
-        }
+        const parsed = parseCap(xmlText);
+        ALL_ALERTS = parsed.alerts;
+
+        const last = parsed.lastSent;
+        statusEl.textContent = "OK";
+        if (last) lastEl.textContent = `Last alert sent: ${last.toISOString()}`;
+
+        populateCountryOptions(ALL_ALERTS);
+        render();
 
       } catch (e) {
-        feedEl.textContent = `Error loading feed:\n${e}`;
         statusEl.textContent = "Failed";
+        document.getElementById("list").innerHTML =
+          `<div class="empty">Error loading feed: <code>${escapeHtml(String(e))}</code></div>`;
       }
     }
 
-    function computeLastUpdated(xmlText) {
+    function parseCap(xmlText) {
       const doc = new DOMParser().parseFromString(xmlText, "application/xml");
-      const sentNodes = Array.from(doc.getElementsByTagName("sent"));
 
-      const times = sentNodes
-        .map(n => Date.parse(n.textContent))
+      // basic parse error detection
+      const parseError = doc.getElementsByTagName("parsererror")[0];
+      if (parseError) throw new Error("Invalid XML received");
+
+      const alertEls = Array.from(doc.getElementsByTagName("alert"));
+      const alerts = alertEls.map(alertEl => alertFromElement(alertEl));
+
+      const sentTimes = alerts
+        .map(a => a.sent ? Date.parse(a.sent) : NaN)
         .filter(t => Number.isFinite(t));
 
-      if (!times.length) return null;
-      return new Date(Math.max(...times));
+      const lastSent = sentTimes.length ? new Date(Math.max(...sentTimes)) : null;
+      return { alerts, lastSent };
     }
 
-    document.getElementById("refresh").addEventListener("click", loadFeed);
+    function textOf(el, tag) {
+      const n = el.getElementsByTagName(tag)[0];
+      return n ? (n.textContent || "").trim() : "";
+    }
 
+    function textsOf(el, tag) {
+      return Array.from(el.getElementsByTagName(tag))
+        .map(n => (n.textContent || "").trim())
+        .filter(Boolean);
+    }
+
+    function alertFromElement(alertEl) {
+      const identifier = textOf(alertEl, "identifier");
+      const sender = textOf(alertEl, "sender");
+      const sent = textOf(alertEl, "sent");
+      const status = textOf(alertEl, "status");
+      const msgType = textOf(alertEl, "msgType");
+      const scope = textOf(alertEl, "scope");
+
+      const infoEl = alertEl.getElementsByTagName("info")[0] || null;
+
+      const event = infoEl ? textOf(infoEl, "event") : "";
+      const headline = infoEl ? textOf(infoEl, "headline") : "";
+      const description = infoEl ? textOf(infoEl, "description") : "";
+      const instruction = infoEl ? textOf(infoEl, "instruction") : "";
+      const urgency = infoEl ? textOf(infoEl, "urgency") : "";
+      const severity = infoEl ? textOf(infoEl, "severity") : "";
+      const certainty = infoEl ? textOf(infoEl, "certainty") : "";
+
+      const categories = infoEl ? textsOf(infoEl, "category") : [];
+      const areas = infoEl ? Array.from(infoEl.getElementsByTagName("area")).map(areaEl => {
+        const areaDesc = textOf(areaEl, "areaDesc");
+        const polygons = textsOf(areaEl, "polygon");
+        const circles = textsOf(areaEl, "circle");
+        const geocodes = Array.from(areaEl.getElementsByTagName("geocode")).map(gc => ({
+          name: textOf(gc, "valueName"),
+          value: textOf(gc, "value")
+        })).filter(g => g.name || g.value);
+
+        return { areaDesc, polygons, circles, geocodes };
+      }) : [];
+
+      const areaText = areas.map(a => a.areaDesc).filter(Boolean).join(" | ");
+      const geoText = areas.flatMap(a => a.geocodes.map(g => `${g.name}:${g.value}`)).join(" | ");
+
+      return {
+        identifier, sender, sent, status, msgType, scope,
+        info: {
+          event, headline, description, instruction,
+          urgency, severity, certainty, categories, areas
+        },
+        _search: (event + " " + headline + " " + description + " " + instruction + " " + areaText + " " + geoText).toLowerCase(),
+        _areaText: areaText
+      };
+    }
+
+    function populateCountryOptions(alerts) {
+      // Build options from observed "areaDesc" words. This is heuristic; CAP does not guarantee country codes.
+      const select = document.getElementById("country");
+      const current = select.value;
+
+      const candidates = new Map(); // lower -> display
+      for (const a of alerts) {
+        const txt = (a._areaText || "").trim();
+        if (!txt) continue;
+
+        // Split on common separators. This is intentionally crude but works better than pretending CAP is consistent.
+        const parts = txt.split(/[|,;/]/g).map(s => s.trim()).filter(Boolean);
+        for (const p of parts) {
+          if (p.length < 3) continue;
+          // Keep it sane: avoid super long phrases as "countries"
+          const display = p.length > 40 ? p.slice(0, 40) + "…" : p;
+          const key = display.toLowerCase();
+          candidates.set(key, display);
+        }
+      }
+
+      // Keep only the top N most frequent-ish (approx by re-scan count)
+      const scored = [];
+      for (const [k, display] of candidates.entries()) {
+        let score = 0;
+        for (const a of alerts) {
+          if ((a._areaText || "").toLowerCase().includes(k)) score++;
+        }
+        if (score >= 2) scored.push({ display, key: k, score });
+      }
+
+      scored.sort((a, b) => b.score - a.score || a.display.localeCompare(b.display));
+      const top = scored.slice(0, 40);
+
+      // Rebuild options
+      select.innerHTML = `<option value="">All</option>` + top
+        .map(o => `<option value="${escapeAttr(o.display)}">${escapeHtml(o.display)}</option>`)
+        .join("");
+
+      // Restore selection if still present
+      const exists = Array.from(select.options).some(opt => opt.value === current);
+      select.value = exists ? current : "";
+    }
+
+    function render() {
+      const country = document.getElementById("country").value.trim().toLowerCase();
+      const q = document.getElementById("q").value.trim().toLowerCase();
+
+      let filtered = ALL_ALERTS;
+
+      if (country) {
+        filtered = filtered.filter(a => (a._areaText || "").toLowerCase().includes(country));
+      }
+      if (q) {
+        filtered = filtered.filter(a => a._search.includes(q));
+      }
+
+      document.getElementById("count").textContent = `${filtered.length} alert(s)`;
+
+      const list = document.getElementById("list");
+      if (!filtered.length) {
+        list.innerHTML = `<div class="empty">No alerts match your filters.</div>`;
+        return;
+      }
+
+      list.innerHTML = filtered.map(a => alertToHtml(a)).join("");
+    }
+
+    function alertToHtml(a) {
+      const title = a.info.headline || a.info.event || "CAP Alert";
+      const sent = a.sent ? escapeHtml(a.sent) : "";
+      const severity = a.info.severity ? escapeHtml(a.info.severity) : "";
+      const urgency = a.info.urgency ? escapeHtml(a.info.urgency) : "";
+      const event = a.info.event ? escapeHtml(a.info.event) : "";
+      const area = a._areaText ? escapeHtml(a._areaText) : "";
+
+      const desc = a.info.description ? escapeHtml(a.info.description) : "";
+      const instr = a.info.instruction ? escapeHtml(a.info.instruction) : "";
+
+      const tags = [
+        severity && `<span class="tag">Severity: ${severity}</span>`,
+        urgency && `<span class="tag">Urgency: ${urgency}</span>`,
+        event && `<span class="tag">${event}</span>`
+      ].filter(Boolean).join(" ");
+
+      return `
+        <details>
+          <summary>
+            <div class="summaryTop">
+              <span class="title">${title}</span>
+              ${tags}
+              ${sent ? `<span class="muted">${sent}</span>` : ""}
+            </div>
+            ${area ? `<div class="muted">${area}</div>` : ""}
+          </summary>
+          <div class="kv">
+            ${a.identifier ? `<div><b>identifier:</b> <code>${escapeHtml(a.identifier)}</code></div>` : ""}
+            ${a.sender ? `<div><b>sender:</b> ${escapeHtml(a.sender)}</div>` : ""}
+            ${desc ? `<div><b>description:</b> ${desc}</div>` : ""}
+            ${instr ? `<div><b>instruction:</b> ${instr}</div>` : ""}
+          </div>
+        </details>
+      `;
+    }
+
+    function buildJson(alerts) {
+      return alerts.map(a => ({
+        identifier: a.identifier,
+        sender: a.sender,
+        sent: a.sent,
+        status: a.status,
+        msgType: a.msgType,
+        scope: a.scope,
+        info: {
+          event: a.info.event,
+          headline: a.info.headline,
+          description: a.info.description,
+          instruction: a.info.instruction,
+          urgency: a.info.urgency,
+          severity: a.info.severity,
+          certainty: a.info.certainty,
+          categories: a.info.categories,
+          areas: a.info.areas
+        }
+      }));
+    }
+
+    function buildGeoJson(alerts) {
+      // Only polygons are converted. Circles are ignored (documented behavior).
+      const features = [];
+
+      for (const a of alerts) {
+        for (const area of (a.info.areas || [])) {
+          for (const poly of (area.polygons || [])) {
+            const ring = parseCapPolygon(poly);
+            if (!ring) continue;
+
+            features.push({
+              type: "Feature",
+              properties: {
+                identifier: a.identifier,
+                sent: a.sent,
+                event: a.info.event || "",
+                headline: a.info.headline || "",
+                severity: a.info.severity || "",
+                urgency: a.info.urgency || "",
+                areaDesc: area.areaDesc || ""
+              },
+              geometry: {
+                type: "Polygon",
+                coordinates: [ring]
+              }
+            });
+          }
+        }
+      }
+
+      return { type: "FeatureCollection", features };
+    }
+
+    function parseCapPolygon(polyText) {
+      // CAP polygon: "lat,lon lat,lon ..."
+      const parts = polyText.trim().split(/\s+/);
+      if (parts.length < 3) return null;
+
+      const coords = [];
+      for (const p of parts) {
+        const [latStr, lonStr] = p.split(",");
+        const lat = Number(latStr);
+        const lon = Number(lonStr);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+        coords.push([lon, lat]); // GeoJSON is [lon, lat]
+      }
+
+      // Close ring
+      const first = coords[0];
+      const last = coords[coords.length - 1];
+      if (!first || !last) return null;
+      if (first[0] !== last[0] || first[1] !== last[1]) coords.push([first[0], first[1]]);
+
+      return coords;
+    }
+
+    function downloadText(filename, mime, text) {
+      const blob = new Blob([text], { type: mime });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    }
+
+    function escapeHtml(s) {
+      return String(s)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+    }
+
+    function escapeAttr(s) {
+      return escapeHtml(s).replaceAll("\n", " ");
+    }
+
+    // Event wiring
+    document.getElementById("refresh").addEventListener("click", loadFeed);
+    document.getElementById("country").addEventListener("change", render);
+    document.getElementById("q").addEventListener("input", render);
+
+    document.getElementById("dlJson").addEventListener("click", () => {
+      const country = document.getElementById("country").value.trim().toLowerCase();
+      const q = document.getElementById("q").value.trim().toLowerCase();
+      let filtered = ALL_ALERTS;
+      if (country) filtered = filtered.filter(a => (a._areaText || "").toLowerCase().includes(country));
+      if (q) filtered = filtered.filter(a => a._search.includes(q));
+      const payload = JSON.stringify(buildJson(filtered), null, 2);
+      downloadText("global_cap.json", "application/json", payload);
+    });
+
+    document.getElementById("dlGeoJson").addEventListener("click", () => {
+      const country = document.getElementById("country").value.trim().toLowerCase();
+      const q = document.getElementById("q").value.trim().toLowerCase();
+      let filtered = ALL_ALERTS;
+      if (country) filtered = filtered.filter(a => (a._areaText || "").toLowerCase().includes(country));
+      if (q) filtered = filtered.filter(a => a._search.includes(q));
+      const payload = JSON.stringify(buildGeoJson(filtered), null, 2);
+      downloadText("global_cap.geojson", "application/geo+json", payload);
+    });
+
+    // Initial load + refresh cadence
     loadFeed();
-    setInterval(loadFeed, 15 * 60 * 1000);
+    setInterval(loadFeed, 60 * 60 * 1000); // hourly to match feed cadence
   </script>
 </body>
 </html>
